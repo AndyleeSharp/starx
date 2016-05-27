@@ -10,14 +10,16 @@ import (
 )
 
 type netService struct {
-	agentUidLock    sync.RWMutex         // protect agentUid
-	agentUid        uint64               // agent unique id
-	agentMapLock    sync.RWMutex         // protect agentMap
-	agentMap        map[uint64]*agent    // agents map
-	acceptorUidLock sync.RWMutex         // protect acceptorUid
-	acceptorUid     uint64               // acceptor unique id
-	acceptorMapLock sync.RWMutex         // protect acceptorMap
-	acceptorMap     map[uint64]*acceptor // acceptor map
+	agentUidLock       sync.RWMutex         // protect agentUid
+	agentUid           uint64               // agent unique id
+	agentMapLock       sync.RWMutex         // protect agentMap
+	agentMap           map[uint64]*agent    // agents map
+	acceptorUidLock    sync.RWMutex         // protect acceptorUid
+	acceptorUid        uint64               // acceptor unique id
+	acceptorMapLock    sync.RWMutex         // protect acceptorMap
+	acceptorMap        map[uint64]*acceptor // acceptor map
+	sessionCloseCbLock sync.RWMutex         // protect sessionCloseCb
+	sessionCloseCb     []func(*Session)     // callback on session closed
 }
 
 // Create new netservive
@@ -55,8 +57,8 @@ func (net *netService) getAgent(sid uint64) (*agent, error) {
 // Create acceptor via netService
 func (net *netService) createAcceptor(conn net.Conn) *acceptor {
 	net.acceptorUidLock.Lock()
-	id := net.agentUid
-	net.agentUid++
+	id := net.acceptorUid
+	net.acceptorUid++
 	net.acceptorUidLock.Unlock()
 	a := newAcceptor(id, conn)
 	// add to maps
@@ -129,23 +131,39 @@ func (net *netService) Multicast(aids []uint64, route string, data []byte) {
 
 // Close session
 func (net *netService) closeSession(session *Session) {
-	if App.Config.IsFrontend {
-		if fs, ok := net.agentMap[session.entityID]; ok && (fs != nil) {
-			fs.socket.Close()
-			net.agentMapLock.Lock()
-			delete(net.agentMap, session.entityID)
-			net.agentMapLock.Unlock()
+	// TODO: notify all backend server, current session has closed.
+	// session close callback
+	net.sessionCloseCbLock.RLock()
+	if len(net.sessionCloseCb) > 0 {
+		for _, cb := range net.sessionCloseCb {
+			if cb != nil {
+				cb(session)
+			}
 		}
-		defaultNetService.dumpAgents()
-	} else {
-		if bs, ok := net.acceptorMap[session.entityID]; ok && (bs != nil) {
-			bs.socket.Close()
-			net.acceptorMapLock.Lock()
-			delete(net.acceptorMap, session.entityID)
-			net.acceptorMapLock.Unlock()
-		}
-		defaultNetService.dumpAcceptor()
 	}
+	net.sessionCloseCbLock.RUnlock()
+	if App.Config.IsFrontend {
+		net.agentMapLock.Lock()
+		if agent, ok := net.agentMap[session.entityID]; ok && (agent != nil) {
+			delete(net.agentMap, session.entityID)
+		}
+		net.agentMapLock.Unlock()
+		defaultNetService.dumpAgents()
+	} /* else {
+		net.acceptorMapLock.RLock()
+		if acceptor, ok := net.acceptorMap[session.entityID]; ok && (acceptor != nil) {
+			// TODO: FIXED IT
+			// backend session close should not cause acceptor remove from acceptor map
+		}
+		net.acceptorMapLock.RUnlock()
+		defaultNetService.dumpAcceptor()
+	}*/
+}
+
+func (net *netService) removeAcceptor(a *acceptor) {
+	net.acceptorMapLock.Lock()
+	delete(net.acceptorMap, a.id)
+	net.acceptorMapLock.Unlock()
 }
 
 // Send heartbeat packet
@@ -179,4 +197,16 @@ func (net *netService) dumpAcceptor() {
 	for _, ses := range net.acceptorMap {
 		Info("session: " + ses.String())
 	}
+}
+
+func (net *netService) sessionClosedCallback(cb func(*Session)) {
+	net.sessionCloseCbLock.Lock()
+	defer net.sessionCloseCbLock.Unlock()
+	net.sessionCloseCb = append(net.sessionCloseCb, cb)
+}
+
+// Callback when session closed
+// Waring: session has closed,
+func OnSessionClosed(cb func(*Session)) {
+	defaultNetService.sessionClosedCallback(cb)
 }

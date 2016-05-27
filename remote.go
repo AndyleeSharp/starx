@@ -34,8 +34,8 @@ func newRemote() *remoteService {
 		status: _RPC_STATUS_UNINIT}
 }
 
-func (rs *remoteService) register(rpcKind rpc.RpcKind, comp RpcComponent) {
-	comp.Setup()
+func (rs *remoteService) register(rpcKind rpc.RpcKind, comp Component) {
+	comp.Init()
 	if rpcKind == rpc.SysRpc {
 		rpc.SysRpcServer.Register(comp)
 	} else if rpcKind == rpc.UserRpc {
@@ -65,7 +65,7 @@ func (rs *remoteService) handle(conn net.Conn) {
 		}
 	}()
 
-	bs := defaultNetService.createAcceptor(conn)
+	acceptor := defaultNetService.createAcceptor(conn)
 	defaultNetService.dumpAcceptor()
 	tmp := make([]byte, 0) // save truncated data
 	buf := make([]byte, 512)
@@ -73,8 +73,9 @@ func (rs *remoteService) handle(conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			Info("session closed(" + err.Error() + ")")
-			bs.status = _STATUS_CLOSED
 			defaultNetService.dumpAgents()
+			acceptor.close()
+			endChan <- true
 			break
 		}
 		tmp = append(tmp, buf[:n]...)
@@ -84,7 +85,7 @@ func (rs *remoteService) handle(conn net.Conn) {
 		// read all request from buffer, and send to handle queue
 		for len(tmp) > headLength {
 			if rr, tmp = readRequest(tmp); rr != nil {
-				requestChan <- &unhandledRequest{bs, rr}
+				requestChan <- &unhandledRequest{acceptor, rr}
 			} else {
 				break
 			}

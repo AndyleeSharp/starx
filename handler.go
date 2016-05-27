@@ -65,7 +65,7 @@ func (handler *handlerService) handle(conn net.Conn) {
 
 	}()
 	// register new session when new connection connected in
-	fs := defaultNetService.createAgent(conn)
+	agent := defaultNetService.createAgent(conn)
 	defaultNetService.dumpAgents()
 	tmp := make([]byte, 0) // save truncated data
 	buf := make([]byte, 512)
@@ -73,7 +73,7 @@ func (handler *handlerService) handle(conn net.Conn) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			Info("session closed(" + err.Error() + ")")
-			fs.close()
+			agent.close()
 			endChan <- true
 			break
 		}
@@ -81,7 +81,7 @@ func (handler *handlerService) handle(conn net.Conn) {
 		var pkg *packet // save decoded packet
 		for len(tmp) >= headLength {
 			if pkg, tmp = unpack(tmp); pkg != nil {
-				packetChan <- &unhandledPacket{fs, pkg}
+				packetChan <- &unhandledPacket{agent, pkg}
 			} else {
 				break
 			}
@@ -114,6 +114,12 @@ func (handler *handlerService) processPacket(fs *agent, pkg *packet) {
 }
 
 func (handler *handlerService) processMessage(session *Session, msg *message) {
+	defer func() {
+		if err := recover(); err != nil {
+			Error("processMessage Error: %+v", err)
+		}
+	}()
+	Info("Route: %s, Length: %d", msg.route, len(msg.body))
 	ri, err := decodeRouteInfo(msg.route)
 	if err != nil {
 		Error(err.Error())
@@ -174,12 +180,7 @@ func (handler *handlerService) remoteProcess(session *Session, ri *routeInfo, ms
 //	- two arguments, both of exported type
 //	- the first argument is *starx.Session
 //	- the second argument is []byte
-func (handler *handlerService) register(rcvr HandlerComponent) {
-	rcvr.Setup()
-	handler._register(rcvr)
-}
-
-func (handler *handlerService) _register(rcvr HandlerComponent) error {
+func (handler *handlerService) register(rcvr Component) error {
 	if handler.serviceMap == nil {
 		handler.serviceMap = make(map[string]*service)
 	}
@@ -215,7 +216,6 @@ func (handler *handlerService) _register(rcvr HandlerComponent) error {
 		return errors.New(str)
 	}
 	handler.serviceMap[s.name] = s
-	handler.dumpServiceMap()
 	return nil
 }
 
